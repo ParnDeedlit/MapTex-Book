@@ -1,0 +1,123 @@
+\chapter{WebGL}
+
+\section{材质Material}
+
+标准的材质结构如下：
+\begin{lstlisting}
+    struct Material
+    {
+        vec3 ambient;    // 环境光照(Ambient Lighting)
+        vec3 diffuse;    // 漫反射光照(Diffuse Lighting)
+        vec3 specular;   // 镜面光照(Specular Lighting)
+        float shininess; // 影响镜面高光的散射/半径
+    };
+\end{lstlisting}
+
+Cesium的材质定义如下: 
+\begin{lstlisting}
+    // Source\Shaders\Builtin\Structs\material.glsl    
+    struct czm_material
+    {
+        vec3 diffuse;    // 漫反射光照(Diffuse Lighting) vec3(0.0);
+        float specular;  // 镜面光照(Specular Lighting) 0.0
+        float shininess; // 影响镜面高光的散射/半径 1.0;
+        vec3 normal;     // 法向量 materialInput.normalEC;
+        vec3 emission;   // 发射光
+        float alpha;     // 透明度
+    };
+    // Source\Shaders\Builtin\Structs\materialInput.glsl
+    struct czm_materialInput  
+    {
+        float s;
+        vec2 st;
+        vec3 str;
+        vec3 normalEC;
+        mat3 tangentToEyeMatrix;
+        vec3 positionToEyeEC;
+        float height;
+        float slope;
+        float aspect;
+        float uaspect;
+    };
+\end{lstlisting}    
+
+Cesium的材质JavaScript对象定义如下: 
+\begin{lstlisting}
+// Source\Scene\Material.js
+function initializeMaterial(options, result) {
+    // 提取fabric中的type uniforms materials components信息
+    var cachedMaterial = Material._materialCache.getMaterial(result.type);
+    if (!defined(cachedMaterial)) {
+        Material._materialCache.addMaterial(result.type, result);
+    }
+
+    createMethodDefinition(result); // 可以简单的认为就是按照不同的材质对struct czm_material的赋值操作
+    createUniforms(result);
+    createSubMaterials(result);
+}
+function createMethodDefinition(material) {
+    var components = material._template.components;
+    var source = material._template.source;
+    if (defined(source)) {
+        material.shaderSource += source + '\n'; // 直接使用glsl的语法
+    } else {
+        // 每种自定义的Material必须重写czm_getMaterial函数来实现各自的特定的参数传递
+        // 其内部实现是通过解析fabric结构里面的components来自动生成对应的材质代码
+        material.shaderSource += 'czm_material czm_getMaterial(czm_materialInput materialInput)\n{\n';
+        // 获取从基类默认的材质结构体
+        material.shaderSource += 'czm_material material = czm_getDefaultMaterial(materialInput);\n';
+        if (defined(components)) {
+            var isMultiMaterial = Object.keys(material._template.materials).length > 0;
+            for (var component in components) {
+                if (components.hasOwnProperty(component)) {
+                    if (component === 'diffuse' || component === 'emission') {
+                        // 针对散射光和发射光的特殊处理。如果可以复合使用不同的material就使用czm_gammaCorrect
+                        // 来复合处理，否则进行常规参数的赋值处理
+                        var isFusion = isMultiMaterial && isMaterialFused(components[component], material);
+                        var componentSource = isFusion ? components[component] : 'czm_gammaCorrect(' + components[component] + ')';
+                        material.shaderSource += 'material.' + component + ' = ' + componentSource + '; \n';
+                    } else if (component === 'alpha') {
+                        // 针对透明度的特殊处理,从代码分析和下面的常规参数感觉没有什么区别
+                        material.shaderSource += 'material.alpha = ' + components.alpha + '; \n';
+                    } else {
+                        // 常规参数的赋值处理
+                        material.shaderSource += 'material.' + component + ' = ' + components[component] + ';\n';
+                    }
+                }
+            }
+        }
+        material.shaderSource += 'return material;\n}\n';
+    }
+}
+function createUniform(material, uniformId) {
+    // uniformType类型可能为 float、bool、channels、samplerCube、sampler2D、mat[2|3|4]、vec[2|3|4]
+    var uniformType = getUniformType(uniformValue);
+    // 本质上将对象化的JavaScript对象解析成glsl需要的格式
+    // 并使用material._uniforms[newUniformId]来保存不同的材质的具体参数
+    var newUniformId = uniformId + '_' + material._count++;
+    if (uniformType === 'sampler2D') {}
+    else if (uniformType === 'samplerCube') {}
+    else if (uniformType.indexOf('mat') !== -1) {}
+    else {}
+}
+\end{lstlisting}   
+
+\section{Color举例}
+\begin{lstlisting}
+Material.ColorType = 'Color';
+Material._materialCache.addMaterial(Material.ColorType, {
+    fabric: {
+        type: Material.ColorType,
+        uniforms: {
+            color: new Color(1.0, 0.0, 0.0, 0.5)
+        },
+        components: {
+            diffuse: 'color.rgb',
+            alpha: 'color.a'
+        }
+    },
+    translucent: function (material) {
+        return material.uniforms.color.alpha < 1.0;
+    }
+});
+\end{lstlisting}  
